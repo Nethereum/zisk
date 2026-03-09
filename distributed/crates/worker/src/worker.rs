@@ -853,60 +853,61 @@ impl<T: ZiskBackend + 'static> Worker<T> {
         let pk = self.pk.clone();
         let options = self.get_proof_options(false);
 
-        tokio::task::spawn_blocking(move || match phase {
-            JobPhase::Contributions => {
-                let message: ContributionsMessage = borsh::from_slice(&bytes[1..]).unwrap();
+        if phase == JobPhase::ContributionsHintsStream {
+            if let Some(hints_sink) = pk.asm_resources.as_ref().and_then(|r| r.hints_sink.clone()) {
+                let message: StreamMessage = borsh::from_slice(&bytes[1..]).unwrap();
+                if let Err(e) = hints_sink.submit(&message.data) {
+                    tracing::error!("Failed to submit hints: {}", e);
+                }
+            } else {
+                tracing::error!("Hints sink is not configured for ContributionsHintsStream");
+            }
+        } else {
+            tokio::task::spawn_blocking(move || {
+                match phase {
+                JobPhase::Contributions => {
+                    let message: ContributionsMessage = borsh::from_slice(&bytes[1..]).unwrap();
 
-                let result = Self::execute_contribution_task(
-                    message.job_id,
-                    &prover,
-                    message.phase_inputs,
-                    message.input_source,
-                    message.hints_source,
-                    message.partition_info,
-                    &pk,
-                    message.options,
-                );
-                if let Err(e) = result {
-                    tracing::error!(
+                    let result = Self::execute_contribution_task(
+                        message.job_id,
+                        &prover,
+                        message.phase_inputs,
+                        message.input_source,
+                        message.hints_source,
+                        message.partition_info,
+                        &pk,
+                        message.options,
+                    );
+                    if let Err(e) = result {
+                        tracing::error!(
                             "Error during Contributions MPI broadcast execution: {}. Waiting for new job...",
                             e
                         );
+                    }
                 }
-            }
-            JobPhase::Prove => {
-                let message: ProveMessage = borsh::from_slice(&bytes[1..]).unwrap();
+                JobPhase::Prove => {
+                    let message: ProveMessage = borsh::from_slice(&bytes[1..]).unwrap();
 
-                let result = Self::execute_prove_task(
-                    message.job_id,
-                    &prover,
-                    message.phase_inputs,
-                    options,
-                );
-                if let Err(e) = result {
-                    error!(
+                    let result = Self::execute_prove_task(
+                        message.job_id,
+                        &prover,
+                        message.phase_inputs,
+                        options,
+                    );
+                    if let Err(e) = result {
+                        error!(
                         "Error during Prove MPI broadcast execution: {}. Waiting for new job...",
                         e
                     );
-                }
-            }
-            JobPhase::Aggregate => {
-                unreachable!("Aggregate phase is not supported in MPI broadcast");
-            }
-            JobPhase::ContributionsHintsStream => {
-                tracing::info!("Received ContributionsHintsStream");
-                if let Some(hints_sink) =
-                    pk.asm_resources.as_ref().and_then(|r| r.hints_sink.clone())
-                {
-                    let message: StreamMessage = borsh::from_slice(&bytes[1..]).unwrap();
-                    if let Err(e) = hints_sink.submit(&message.data) {
-                        tracing::error!("Failed to submit hints: {}", e);
                     }
-                } else {
-                    tracing::error!("Hints sink is not configured for ContributionsHintsStream");
                 }
+                JobPhase::Aggregate => {
+                    unreachable!("Aggregate phase is not supported in MPI broadcast");
+                }
+                JobPhase::ContributionsHintsStream => unreachable!("ContributionsHintsStream is handled separately and should not reach this point"),
             }
-        });
+            });
+        }
         Ok(())
     }
 }
