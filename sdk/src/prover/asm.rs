@@ -179,12 +179,21 @@ impl ProverEngine for AsmProver {
         asm_services.start_asm_services(&asm_mt_path, asm_runner_options)?;
         timer_stop_and_log_info!(STARTING_ASM_MICROSERVICES);
 
+        let mpi_broadcast_fn = elf.with_hints().then(|| {
+            let pctx = pctx.clone();
+            Arc::new(move |data: &mut Vec<u8>| {
+                pctx.mpi_ctx.broadcast(data);
+                Ok(())
+            }) as Arc<dyn Fn(&mut Vec<u8>) -> Result<()> + Send + Sync>
+        });
+
         let asm_resources = AsmResources::new(
             local_rank,
             base_port,
             unlock_mapped_memory,
             verbose_mode,
             elf.with_hints(),
+            mpi_broadcast_fn,
         );
 
         self.n_setups.fetch_add(1, Ordering::SeqCst);

@@ -155,7 +155,7 @@ impl HintsProcessorBuilder {
     ///
     /// * `Ok(HintsProcessor)` - Successfully constructed processor
     /// * `Err` - If the thread pool fails to initialize
-    pub fn build(self) -> Result<HintsProcessor> {
+    pub fn build(mut self) -> Result<HintsProcessor> {
         let pool = ThreadPoolBuilder::new()
             .num_threads(self.num_threads)
             .build()
@@ -164,10 +164,11 @@ impl HintsProcessorBuilder {
         let state = Arc::new(HintProcessorState::new());
         let hints_sink = self.hints_sink;
 
+        tracing::info!("MPI BROADCAST IS SOME {}", self.mpi_broadcast_fn.is_some());
         // Spawn drainer thread
         let drainer_state = Arc::clone(&state);
         let drainer_sink = Arc::clone(&hints_sink);
-        let drainer_broadcast = self.mpi_broadcast_fn.clone();
+        let drainer_broadcast = self.mpi_broadcast_fn.take();
         let drainer_thread = std::thread::spawn(move || {
             HintsProcessor::drainer_thread(drainer_state, drainer_sink, drainer_broadcast);
         });
@@ -183,7 +184,6 @@ impl HintsProcessorBuilder {
             stream_active: AtomicBool::new(false),
             instant: Mutex::new(None),
             pending_partial: Mutex::new(None),
-            mpi_broadcast_fn: self.mpi_broadcast_fn,
         })
     }
 }
@@ -223,9 +223,6 @@ pub struct HintsProcessor {
 
     /// Buffer for incomplete hint data between batches
     pending_partial: Mutex<Option<PartialPrecompileHint>>,
-
-    /// Optional MPI broadcast function for initialization synchronization
-    mpi_broadcast_fn: Option<MpiBroadcastFn>,
 }
 
 impl HintsProcessor {
@@ -254,21 +251,6 @@ impl HintsProcessor {
             custom_handlers: HashMap::new(),
             mpi_broadcast_fn: None,
         }
-    }
-
-    /// Executes the MPI broadcast callback if one was configured.
-    ///
-    /// This allows manual control over when MPI synchronization occurs.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - Broadcast completed successfully or no callback configured
-    /// * `Err` - If the broadcast callback returns an error
-    pub fn mpi_broadcast(&self, data: &mut Vec<u8>) -> Result<()> {
-        if let Some(broadcast_fn) = &self.mpi_broadcast_fn {
-            broadcast_fn(data)?;
-        }
-        Ok(())
     }
 
     /// Processes hints in parallel with non-blocking, ordered output.
@@ -612,6 +594,7 @@ impl HintsProcessor {
                         }
 
                         if let Some(broadcast_fn) = &mpi_broadcast_fn {
+                            tracing::info!("Submitting hint result...");
                             let mut serialized = borsh::to_vec(&(
                                 JobPhase::ContributionsHintsStream,
                                 StreamMessage { data: data_to_submit.clone() },
@@ -620,6 +603,10 @@ impl HintsProcessor {
 
                             broadcast_fn(&mut serialized)
                                 .expect("MPI broadcast failed in drainer thread");
+                        } else {
+                            tracing::info!(
+                                "Drainer thread has no MPI broadcast callback configured"
+                            );
                         }
 
                         // Re-acquire lock for next iteration
@@ -799,6 +786,10 @@ impl StreamProcessor for HintsProcessor {
 
     fn reset(&self) {
         self.reset();
+    }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
+        self
     }
 }
 
