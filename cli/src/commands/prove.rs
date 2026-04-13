@@ -85,7 +85,7 @@ pub struct ZiskProve {
     /// Reduce memory footprint during proving at the cost of speed
     #[arg(short = 'm', long, default_value_t = false)]
     pub minimal_memory: bool,
-    
+
     /// Use GPU acceleration
     #[clap(long, default_value_t = false)]
     pub gpu: bool,
